@@ -1,20 +1,34 @@
-/* Compile: gcc -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c99 */
+/* Compile: gcc   -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+** or     : clang -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+** ---------------------------------------------------------------------------------------------
+** I find clang to be so much more descriptive for errors and warnings. <3 */
 
-#include <sys/stat.h>    /* stat()                            */
-#include <assert.h>      /* assert() -- *duh*                 */
-#include <stdio.h>       /* fwrite(), fprintf(), fputs(), ... */
-#include <stdlib.h>      /* EXIT_SUCCESS, EXIT_FAILURE        */
-#include <fcgi_stdio.h>  /* FCGI_Accept()                     */
-#include <lualib.h>      /* LUA'Y STUFF :D-S-<                */
+#include <sys/stat.h>    /* stat()                             */
+#include <assert.h>      /* assert() -- *duh*                  */
+#include <stdio.h>       /* fwrite(), fprintf(), fputs(), ...  */
+#include <stdlib.h>      /* EXIT_SUCCESS, EXIT_FAILURE         */
+#include <fcgi_stdio.h>  /* FCGI_Accept()                      */
+#include <errno.h>       /* int errno (used with stat() later) */
+#include <lualib.h>      /* LUA'Y STUFF :D-S-<                 */
 #include <lauxlib.h>
 
+/* A more efficient puts("whatever") -- Because I have fun micro-optimizing without reason */
+
+#define LITERAL_LEN(array) (sizeof(array) / sizeof((array)[0]))
+
+#define WRITE_LITERAL_STR(string, stream) \
+	    fwrite((string), sizeof((string)[0]), LITERAL_LEN(string), (stream))
+
+/* This overrides Lua's original print()
+** It is functionally equivalent to io.stdout:write(...)
+** (Except in that it calls tostring() on each arg) */
 static int
 magnet_print(lua_State * const L)
 {
 	const size_t nargs = lua_gettop(L);
 	if (nargs)
 	{
-		char *s;
+		const char *s;
 		size_t i, s_len;
 
 		lua_getglobal(L, "tostring");
@@ -22,15 +36,15 @@ magnet_print(lua_State * const L)
 
 		for (i = 1; i <= nargs; i++)
 		{
-			lua_pushvalue(L, -1);                      /* Push tostring()                      */
-			lua_pushvalue(L,  i);                      /* Push argument                        */
-			lua_call(L, 1, 1);                         /* tostring(argument), take 1, return 1 */
-			s = (char *) lua_tolstring(L, -1, &s_len); /* Fetch result.                        */
+			lua_pushvalue(L, -1);              /* Push tostring()                      */
+			lua_pushvalue(L,  i);              /* Push argument                        */
+			lua_call(L, 1, 1);                 /* tostring(argument), take 1, return 1 */
+			s =  lua_tolstring(L, -1, &s_len); /* Fetch result.                        */
 			
 			if (s == NULL)
 				return luaL_error(L, LUA_QL("tostring") " must return a string to " LUA_QL("print"));
 
-			fwrite(s, 1, s_len, stdout);
+			fwrite((char *) s, 1, s_len, stdout);
 
 			/* Pop <tostring(argument)> */
 			lua_pop(L, 1);
@@ -44,55 +58,90 @@ magnet_print(lua_State * const L)
 static int
 magnet_cache_script(lua_State * const L, const char * const fn, const time_t mtime)
 {
+	/* Return value from luaL_loadfile() */
+	int status = 0;
+
 	/* Compile it as a chunk, push it as a function onto the Lua stack. */
-	if (luaL_loadfile(L, fn))
+	if ((status = luaL_loadfile(L, fn)))
 	{
-		fprintf(stderr, "%s\n", lua_tostring(L, -1));
-		lua_pop(L, 1); /* remove the error-msg */
+		switch(status)
+		{
+			case LUA_ERRSYNTAX:
+				printf("Content-Type: text/plain\r\n"
+				       "Status: 200 OK\r\n\r\n"
+				       "%s",
+				       lua_tostring(L, -1));
+				break;
+			/* Going to assume it exists but we can't open/read it. */
+			case LUA_ERRFILE:
+				fputs("Status: 403 Forbidden\r\n\r\n", stdout);
+				break;
+			case LUA_ERRMEM:
+				fputs("Status: 503 Service Unavailable\r\n\r\n", stdout);
+				break;
+		}
+		/* Pop err message. */
+		lua_pop(L, 1);
 		return EXIT_FAILURE;
 	}
 
-	/* Push _G.magnet and _G.magnet.cache onto the Lua stack. */
-	lua_getfield(L, LUA_GLOBALSINDEX, "magnet");
-	lua_getfield(L, -1, "cache");
+	/* Make sure loadfile() pushed a function */
+	assert(lua_isfunction(L, -1));
 
-	/* <table>.script = <func> */
-	lua_newtable(L); 
-	assert(lua_isfunction(L, -4));
-	lua_pushvalue(L, -4); 
-	lua_setfield(L, -2, "script"); /* Pops the function. */
+	lua_getglobal  (L, "magnet"          ); /* Push magnet from _G                           */
+	lua_getfield   (L,       -1,  "cache"); /* Push magnet.cache from _G                     */
+	lua_newtable   (L                    ); /* Push a new table                              */
+	lua_pushvalue  (L,       -4          ); /* Push the loadfile() function (again)          */
+	lua_setfield   (L,       -2, "script"); /* <table>.script = <function>, pops <function>  */
+	lua_pushinteger(L,    mtime          ); /* Push mtime                                    */
+	lua_setfield   (L,       -2,  "mtime"); /* <table>.mtime = <mtime>, pops <mtime>         */
+	lua_pushinteger(L,        1          ); /* Push 1 (beginning value for ~script~.hits     */
+	lua_setfield   (L,       -2,   "hits"); /* <table>.hits = 1, pops the 1                  */
+	lua_setfield   (L,       -2,       fn); /* magnet.cache.~script~ = <table>, pops <table> */
+	lua_pop        (L,        2          ); /* Pops magnet and magnet.cache                  */
 
-	/* <table>.mtime = <mtime> */
-	lua_pushinteger(L, mtime);
-	lua_setfield(L, -2, "mtime");  /* Pops the mtime integer. */
-
-	/* <table>.hits = <hits> */
-	lua_pushinteger(L, 0);
-	lua_setfield(L, -2, "hits");   /* Pops the hits integer. */
-
-	/* magnet.cache['<script>'] = <table> */
-	lua_setfield(L, -2, fn);       /* Pops the "anonymous" table. */
-
-	lua_pop(L, 2); /* Pop _G.magnet and _G.magnet.cache */
-
-	/* On the stack should be the function itself. */
-	assert(lua_isfunction(L, lua_gettop(L)));
-
-	return 0;
+	/* Only return 1 thing on the stack --> the script/function */
+	assert(lua_gettop(L) == 1);
+	return EXIT_SUCCESS;
 }
 
 static int
 magnet_get_script(lua_State * const L, const char * const fn)
 {
 	struct stat st;
-	time_t mtime = 0;
 
 	assert(lua_gettop(L) == 0);
 
-	if (stat(fn, &st) == -1)
+	if (fn == NULL)
+	{
+		WRITE_LITERAL_STR("Status: 400 Bad Request\r\n\r\n", stdout);
 		return EXIT_FAILURE;
+	}
 
-	mtime = st.st_mtime;
+	if (stat(fn, &st) == -1)
+	{
+		switch (errno)
+		{
+			case EACCES:
+				WRITE_LITERAL_STR("Status: 403 Forbidden\r\n\r\n", stdout);
+				break;
+			case ENOENT:
+				WRITE_LITERAL_STR("Status: 404 Not Found\r\n\r\n", stdout);
+				break;
+			default:
+				WRITE_LITERAL_STR("Status: 503 Service Unavailable\r\n\r\n", stdout);
+				break;
+		}
+		return EXIT_FAILURE;
+	}
+
+	/* Not sure why one would SCRIPT_FILENAME='somedirectory/'
+	** but let's cover our bases anyway. */
+	if (S_ISDIR(st.st_mode))
+	{
+		WRITE_LITERAL_STR("Status: 400 Bad Request\r\n\r\n", stdout);
+		return EXIT_FAILURE;
+	}
 
 	lua_getfield(L, LUA_GLOBALSINDEX, "magnet"); 
 	assert(lua_istable(L, -1));
@@ -105,7 +154,7 @@ magnet_get_script(lua_State * const L, const char * const fn)
 	if (!lua_istable(L, -1))
 	{
 		lua_pop(L, 3); /* Pop the nil. */
-		if (magnet_cache_script(L, fn, mtime))
+		if (magnet_cache_script(L, fn, st.st_mtime))
 			return EXIT_FAILURE;
 	}
 	else
@@ -114,7 +163,7 @@ magnet_get_script(lua_State * const L, const char * const fn)
 		assert(lua_isnumber(L, -1));
 
 		/* Script has not been modified, continue as usual. */
-		if (mtime == lua_tointeger(L, -1))
+		if (st.st_mtime == lua_tointeger(L, -1))
 		{
 			lua_Integer hits;
 			lua_pop(L, 1);
@@ -139,7 +188,7 @@ magnet_get_script(lua_State * const L, const char * const fn)
 		else
 		{
 			lua_pop(L, 4);
-			if (magnet_cache_script(L, fn, mtime))
+			if (magnet_cache_script(L, fn, st.st_mtime))
 				return EXIT_FAILURE;
 		}
 	}
@@ -165,12 +214,12 @@ main(void)
 	{
 		assert(lua_gettop(L) == 0);
 
+		/* We couldn't get the script as a function,
+		** the appropriate response has been sent,
+		** continue to the next iteration. */
 		if (magnet_get_script(L, getenv("SCRIPT_FILENAME")))
-		{
-			fputs("Status: 404\r\n\r\n", stdout);
-			assert(lua_gettop(L) == 0);
 			continue;
-		}
+
 		/**
 		 * We want to create empty environment for our script. 
 		 * 
@@ -199,22 +248,22 @@ main(void)
 		/* The top of the stack is the function from magnet_get_script() again. */
 		if (lua_pcall(L, 0, 1, 0))
 		{
-			/* Unsure about this. */
-			/* fprintf(stderr, "%s\n", lua_tostring(L, -1)); */
-			fputs("Status: 503\r\n\r\n", stdout);
-			fputs(lua_tostring(L, -1)  , stdout);
-
-			/* Remove the error message. */
-			lua_pop(L, 1);
-
+			/* The error will print in-place, there is no gaurantee
+			** that the appropriate headers to display the error have been sent.
+			** -----------------------------------------------------------------
+			** Maybe in the future I can overload print() to print to something other than stdout?
+			** Then we could check for a pcall() error and if none occurred, flush what was sent to
+			** that dummy stream to the true stdout. */
+			fputs(lua_tostring(L, -1), stdout);
+			lua_pop(L, 1); /* Remove the error message. */
 			continue;
 		}
 
-		/* Remove the function copy from the stack. */
+		/* The pcall() succeeded without error,
+		** remove the function copy from the stack. */
 		lua_pop(L, 1);
-		assert(lua_gettop(L) == 0);
 	}
 
 	lua_close(L);
 	return EXIT_SUCCESS;
-}	
+}

@@ -11,9 +11,9 @@ Features (so far)
 
 	>> I take no credit for these.
 
-	- print(...) has been overridden to allow for printing
-	  Lua strings with embedded zeros and to do without the
-	  \t and \n if more than one argument is supplied
+	- print(...) has been overriden.
+		-- Arguments are printed directly to stdout()
+		-- Arguments are converted to a string with Lua's tostring() before they are printed (which may invoke __string).
 
 Tip
 ---
