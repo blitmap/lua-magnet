@@ -1,4 +1,4 @@
-Compile with: gcc   -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c99
+Compile with: gcc   -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
 or          : clang -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
 --------------------------------------------------------------------------------------------------
 I find clang to be so much more descriptive for errors and warnings. <3
