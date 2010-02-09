@@ -1,6 +1,30 @@
-Compile with: gcc -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c99
+Compile with: gcc   -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c99
+or          : clang -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+--------------------------------------------------------------------------------------------------
+I find clang to be so much more descriptive for errors and warnings. <3
+
 
 Associate the .lua extension with the `magnet` fastcgi launcher in your web server.
+
+On my webserver I use the spawn-fcgi program (originally from lighttpd?) like so:
+
+	/usr/bin/spawn-fcgi -u httpd -g httpd -s /tmp/randomstring-webserver-lua.sock -f /path/to/lua-magnet
+
+I then set a rule for all requests to files with the .lua extension to communicate
+with that fastcgi server through the /tmp/randomstring-webserver-lua.sock socket.
+
+Request: /path/to/whatever.lua
+
+if ($Request =~ m{\.lua$})
+{
+	--> Query FastCGI server with SCRIPT_FILENAME='/path/to/whatever.lua'
+	<-- FastCGI Server Response... (magnet response)
+}
+
+*Happy User* :D-S-<
+
+At least, that's my understanding of it... I am *STILL LEARNING* about FastCGI
+and backend-oriented webdev, but so far my attempts have worked out pretty well...
 
 Features (so far)
 -----------------
@@ -80,3 +104,15 @@ Roadmap
 	Low Priority: (luaFilesystem works spendidly for now)
 		- Add a function for listing a directory which returns each item (return file1, file2, file3 -- varargs-like)
 		- Add a function for stat()'ing a file.  Return attributes like ^ ?
+
+License
+-------
+
+Let's assume my derived work is under the protection of An Hero.
+You may do whatever you want with this code and you may not
+hold me responsible for any negative affect it has on you,
+your posessions, girlfriend, therapist, ...  I would be
+amazed if it caused damage to your computer, and if it does
+I'll laugh at you.  You have been warned.
+
+Compliments of the Greater Lulz License version 2
