@@ -28,8 +28,8 @@ Tip
 You can check out the interesting CGI environment variables with
 os.getenv('REQUEST_URI') or os.getenv('QUERY_STRING'), etc... it's
 just up to you to parse said query string.  I've already done
-something in pure Lua which you can view at http://partyvan.us/bleh.lua,
-the source is icky and found under http://partyvan.us/sources/cgi-env.lua
+something in pure Lua which you can view at http://partyvan.us/lua/bleh.lua,
+the source is icky and viewable with '&highlight' appended: http://partyvan.us/lua/bleh.lua&highlight
 
 List of CGI Environment Variables
 ---------------------------------
