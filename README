@@ -9,11 +9,18 @@ Features (so far)
 	- Keeps track of how many hits each script gets (_G.magnet.cache['<script'].hits)
 	- Also exports the mtime for each script (which it uses to re-cache automagically if it has been altered)
 
-	>> I take no credit for these.
+	^ I take no credit for these. ^
 
 	- print(...) has been overriden.
-		-- Arguments are printed directly to stdout()
-		-- Arguments are converted to a string with Lua's tostring() before they are printed (which may invoke __string).
+		Arguments are converted to a string (if necessary) with Lua's tostring(), which will invoke a defined __tostring).
+
+	- Improved error-handling?
+		Sends the ~correct~ response if the script can't be accessed for interpretation (403 Forbidden, 404 Not Found, 503 Service Unavailable).
+		Errors generated when interpreting the script into bytecode are reported (200 OK, Content-Type: text/plain, error...)
+		Errors generated at runtime are reported in-place with a stack trace from the "stock" debug.traceback()
+	
+	- Reports how many connections served through magnet.connections_served
+		(connections_served = sum of all scripts' magnet.cache['<script>'].hits) 
 
 Tip
 ---
@@ -69,8 +76,7 @@ Roadmap
 		- Export all the CGI environment variables under magnet.env
 			- Find out the standard for parsing the QUERY_STRING if it is defined. -.-
 				- I believe ; or & is the (conventional?) record separator... need more info.
-		- Expose some number showing the total FastCGI requests handled. (easy)
 
 	Low Priority: (luaFilesystem works spendidly for now)
-		- Add a function for listing a directory which returns a table *cough*array*cough* of the contents.
-		- Add a function for stat()'ing a file.  Return the usual struct as a table.
+		- Add a function for listing a directory which returns each item (return file1, file2, file3 -- varargs-like)
+		- Add a function for stat()'ing a file.  Return attributes like ^ ?

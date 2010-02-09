@@ -95,13 +95,13 @@ magnet_cache_script(lua_State * const L, const char * const fn, const time_t mti
 	lua_setfield   (L,       -2, "script"); /* <table>.script = <function>, pops <function>  */
 	lua_pushinteger(L,    mtime          ); /* Push mtime                                    */
 	lua_setfield   (L,       -2,  "mtime"); /* <table>.mtime = <mtime>, pops <mtime>         */
-	lua_pushinteger(L,        1          ); /* Push 1 (beginning value for ~script~.hits     */
+	lua_pushinteger(L,        0          ); /* Push 1 (beginning value for ~script~.hits     */
 	lua_setfield   (L,       -2,   "hits"); /* <table>.hits = 1, pops the 1                  */
 	lua_setfield   (L,       -2,       fn); /* magnet.cache.~script~ = <table>, pops <table> */
 	lua_pop        (L,        2          ); /* Pops magnet and magnet.cache                  */
 
-	/* Only return 1 thing on the stack --> the script/function */
-	assert(lua_gettop(L) == 1);
+	/* Only 2 things on the stack, debug.traceback() and loadfile() function */
+	assert(lua_gettop(L) == 2);
 	return EXIT_SUCCESS;
 }
 
@@ -109,8 +109,6 @@ static int
 magnet_get_script(lua_State * const L, const char * const fn)
 {
 	struct stat st;
-
-	assert(lua_gettop(L) == 0);
 
 	if (fn == NULL)
 	{
@@ -136,19 +134,19 @@ magnet_get_script(lua_State * const L, const char * const fn)
 	}
 
 	/* Not sure why one would SCRIPT_FILENAME='somedirectory/'
-	** but let's cover our bases anyway. */
+	** but let's cover our bases anyway. I believe loadfile()
+	** should be possible with anything *but* a directory */
 	if (S_ISDIR(st.st_mode))
 	{
 		WRITE_LITERAL_STR("Status: 400 Bad Request\r\n\r\n", stdout);
 		return EXIT_FAILURE;
 	}
 
-	lua_getfield(L, LUA_GLOBALSINDEX, "magnet"); 
-	assert(lua_istable(L, -1));
-	lua_getfield(L, -1, "cache");
-	assert(lua_istable(L, -1));
-
-	lua_getfield(L, -1, fn);
+	lua_getglobal(L, "magnet");   /* Push magnet from _G              */
+	assert(lua_istable(L, -1));   /* assert() magnet is a table       */
+	lua_getfield(L, -1, "cache"); /* Push magnet.cache                */
+	assert(lua_istable(L, -1));   /* assert() magnet.cache is a table */
+	lua_getfield(L, -1, fn);      /* Push magnet.cache['<script>']    */
 
 	/* magnet.cache['<script>'] is not a table for some reason, re-cache. */
 	if (!lua_istable(L, -1))
@@ -165,15 +163,7 @@ magnet_get_script(lua_State * const L, const char * const fn)
 		/* Script has not been modified, continue as usual. */
 		if (st.st_mtime == lua_tointeger(L, -1))
 		{
-			lua_Integer hits;
 			lua_pop(L, 1);
-	
-			/* Increment the hit counter. */	
-			lua_getfield(L, -1, "hits");
-			hits = lua_tointeger(L, -1);
-			lua_pop(L, 1);
-			lua_pushinteger(L, hits + 1);
-			lua_setfield(L, -2, "hits");
 
 			/* It is in the cache. */
 			assert(lua_istable(L, -1));
@@ -187,14 +177,36 @@ magnet_get_script(lua_State * const L, const char * const fn)
 		** not match the actual mtime, re-cache. */
 		else
 		{
+			/* Pop <mtime>, magnet.cache['<script>'],
+			** magnet.cache, and magnet. */
 			lua_pop(L, 4);
 			if (magnet_cache_script(L, fn, st.st_mtime))
 				return EXIT_FAILURE;
 		}
 	}
 	/* This should be the function (top of Lua stack). */
-	assert(lua_gettop(L) == 1);
+	assert(lua_gettop(L) == 2 && lua_isfunction(L, 2));
+	return EXIT_SUCCESS;
+}
 
+static int
+magnet_script_hits_increment(lua_State * const L, const char * const script)
+{
+	lua_Integer hits;
+
+	lua_getglobal(L, "magnet");   /* Push magnet from _G                                         */
+	assert(lua_istable(L, -1));   /* assert() magnet is a table                                  */
+	lua_getfield(L, -1, "cache"); /* Push magnet.cache                                           */
+	assert(lua_istable(L, -1));   /* assert() magnet.cache is a table                            */
+	lua_getfield(L, -1, script);  /* Push magnet.cache['<script>']                               */
+
+	lua_getfield(L, -1, "hits");  /* Push magnet.cache['<script>'].hits                          */
+	hits = lua_tointeger(L, -1);  /* hits = tointeger(^.hits)                                    */
+	lua_pop(L, 1);                /* Pop  magnet.cache['<script>'].hits                          */
+	lua_pushinteger(L, hits + 1); /* Push (hits + 1)                                             */
+	lua_setfield(L, -2, "hits");  /* magnet.cache['<script>'].hits = (hits + 1), pops (hits + 1) */
+
+	lua_pop(L, 3);                /* Pop magnet.cache['<script>'], magnet.cache, and magnet      */
 	return EXIT_SUCCESS;
 }
 
@@ -205,14 +217,25 @@ main(void)
 
 	luaL_openlibs(L);
 
-	lua_newtable(L); /* magnet. */
-	lua_newtable(L); /* magnet.cache. */
-	lua_setfield(L, -2, "cache");
-	lua_setfield(L, LUA_GLOBALSINDEX, "magnet");
+	lua_newtable   (L                                ); /* Push a new table.                                 */
+	lua_newtable   (L                                ); /* Push a new table.                                 */
+	lua_setfield   (L,       -2,              "cache"); /* <table#1>.cache = <table#2>, pops <table#2>       */
+	lua_pushinteger(L,        0                      ); /* Push 0                                            */
+	lua_setfield   (L,       -2, "connections_served"); /* <table#1>.connections_served = 0, pops 0          */
+	lua_setglobal  (L, "magnet"                      ); /* _G.magnet = <table#1>, pops <table#1>             */
+
+	lua_getglobal(L, "debug"             ); /* Push debug from _G     */
+	lua_getfield (L,      -1, "traceback"); /* Push debug.traceback() */
+	lua_remove   (L,       1             ); /* Pop  debug             */
 
 	while (FCGI_Accept() >= 0)
 	{
-		assert(lua_gettop(L) == 0);
+		/* How many connections
+		** we have served. */
+		lua_Integer connections_served;
+
+		/* debug.traceback() */
+		assert(lua_gettop(L) == 1 && lua_isfunction(L, 1));
 
 		/* We couldn't get the script as a function,
 		** the appropriate response has been sent,
@@ -220,50 +243,44 @@ main(void)
 		if (magnet_get_script(L, getenv("SCRIPT_FILENAME")))
 			continue;
 
-		/**
-		 * We want to create empty environment for our script. 
-		 * 
-		 * setmetatable({}, {__index = _G})
-		 * 
-		 * If a function symbol is not defined in our env,
-		 * __index will look it up in the global env. 
-		 *
-		 * All variables created in the script-env will be thrown 
-		 * away at the end of the script run. */
+		lua_newtable     (L                             ); /* Will become the env for our script-function        */
+		lua_pushcfunction(L,     magnet_print           ); /* Push static int magnet_print(lua_State * const L)  */
+		lua_setfield     (L,               -2,   "print"); /* <table>.print() = magnet_print()                   */
+		lua_newtable     (L                             ); /* Push a new table.                                  */
+		lua_pushvalue    (L, LUA_GLOBALSINDEX           ); /* Push _G                                            */
+		lua_setfield     (L,               -2, "__index"); /* <table#2>.__index = _G                             */
+		lua_setmetatable (L,               -2           ); /* setmetatable(<table#1>, <table#2>)                 */
+		lua_setfenv      (L,               -2           ); /* setfenv(<script-function>, <table#1>) (modded env) */
 
-		/* Empty environment; will become parent to _G._G */
-		lua_newtable(L);
+		/* debug.traceback() and script-function on stack */
+		assert(lua_gettop(L) == 2);
 
-		/* We have to overwrite the print function */
-		lua_pushcfunction(L, magnet_print);
-		lua_setfield(L, -2, "print");
-
-		lua_newtable(L);                    /* The meta-table for the new env.          */
-		lua_pushvalue(L, LUA_GLOBALSINDEX);
-
-		lua_setfield(L,     -2, "__index"); /* { __index = _G }                         */
-		lua_setmetatable(L, -2);            /* setmetatable({}, { __index = _G })       */
-		lua_setfenv(L,      -2);            /* On the stack should be the modified env. */
-
-		/* The top of the stack is the function from magnet_get_script() again. */
-		if (lua_pcall(L, 0, 1, 0))
-		{
-			/* The error will print in-place, there is no gaurantee
-			** that the appropriate headers to display the error have been sent.
-			** -----------------------------------------------------------------
-			** Maybe in the future I can overload print() to print to something other than stdout?
-			** Then we could check for a pcall() error and if none occurred, flush what was sent to
-			** that dummy stream to the true stdout. */
+		/* Any errors generated by pcall() are printed in-place,
+		** don't count on headers having been sent yet.
+		** --------------------------------------------
+		** 1 item is always returned, 1 (last arg) is debug.traceback() */
+		if (lua_pcall(L, 0, 1, 1))
 			fputs(lua_tostring(L, -1), stdout);
-			lua_pop(L, 1); /* Remove the error message. */
-			continue;
-		}
 
-		/* The pcall() succeeded without error,
-		** remove the function copy from the stack. */
+		/* Pop the 1 returned item from pcall() */
 		lua_pop(L, 1);
-	}
 
+		/* Increment our hits counter.
+		** Must do this after the script
+		** is run so all the scripts' .hits
+		** == magnet.connections_served */
+		magnet_script_hits_increment(L, getenv("SCRIPT_FILENAME"));
+
+		/* Increment our served requets counter. */
+		lua_getglobal(L, "magnet");                 /* Push magnet from _G                                                                */
+		assert(lua_istable(L, -1));                 /* assert() magnet is a table                                                         */
+		lua_getfield(L, -1, "connections_served");  /* Push magnet.connections_served                                                     */
+		connections_served = lua_tointeger(L, -1);  /* connections_served = tointeger(magnet.connections_served)                          */
+		lua_pop(L, 1);                              /* Pop magnet.connections_served                                                      */
+		lua_pushinteger(L, connections_served + 1); /* Push connections_served + 1                                                        */
+		lua_setfield(L, -2, "connections_served");  /* magnet.connections_served = (connections_served + 1), pop (connections_served + 1) */
+		lua_pop(L, 1);                              /* Pop magnet                                                                         */
+	}
 	lua_close(L);
 	return EXIT_SUCCESS;
 }
