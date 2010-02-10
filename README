@@ -15,7 +15,7 @@ with that fastcgi server through the /tmp/randomstring-webserver-lua.sock socket
 
 Request: /path/to/whatever.lua
 
-if ($Request =~ m{\.lua$})
+if ($REQUEST_URI =~ m{\.lua$})
 {
 	--> Query FastCGI server with SCRIPT_FILENAME='/path/to/whatever.lua'
 	<-- FastCGI Server Response... (magnet response)
@@ -43,8 +43,8 @@ Features (so far)
 		Errors generated when interpreting the script into bytecode are reported (200 OK, Content-Type: text/plain, error...)
 		Errors generated at runtime are reported in-place with a stack trace from the "stock" debug.traceback()
 	
-	- Reports how many connections served through magnet.connections_served
-		(connections_served = sum of all scripts' magnet.cache['<script>'].hits) 
+	- Reports how many connections served through magnet.conns_served
+		(conns_served = sum of all scripts' magnet.cache['<script>'].hits) 
 
 Tip
 ---
