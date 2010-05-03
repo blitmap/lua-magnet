@@ -1,39 +1,46 @@
+/* Compile: gcc   -o magnet{,.c} -W -Wall -O2 -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+**        : clang -o magnet{,.c} -W -Wall -O2 -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+** ---------------------------------------------------------------------------------------------
+** I find clang to be so much more descriptive for errors and warnings. <3 */
+
 #include <sys/stat.h>    /* stat()                             */
 #include <assert.h>      /* assert() -- *duh*                  */
 #include <stdio.h>       /* fwrite(), fprintf(), fputs(), ...  */
 #include <stdlib.h>      /* EXIT_SUCCESS, EXIT_FAILURE         */
 #include <fcgi_stdio.h>  /* FCGI_Accept()                      */
 #include <errno.h>       /* int errno (used with stat() later) */
-#include <lualib.h>      /* LUA'Y STUFF :D-S-<                 */
+#include <lualib.h>      /* LUA'Y STUFF :D -S-<                 */
 #include <lauxlib.h>
-
-/* Compile: gcc   -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
-** or     : clang -Wall -O2 -g -o magnet magnet.c -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
-** ---------------------------------------------------------------------------------------------
-** I find clang to be so much more descriptive for errors and warnings. <3 */
 
 /* For getting the length of an array (obviously) */
 #define ARRAY_LEN(array) (sizeof(array) / sizeof((array)[0]))
 
-/* A more efficient puts("whatever") -- Because I have fun micro-optimizing without reason */
+/* A more efficient puts("read-only literal str")
+** Because I have fun micro-optimizing without reason */
 #define WRITE_LITERAL_STR(string, stream) \
 	fwrite((string), sizeof((string)[0]), ARRAY_LEN(string), (stream))
 
-/* For quickly sending the headers
-** and the content being the status. */
-#define SEND_ERR(status) \
-	WRITE_LITERAL_STR("Content-Type: text/html\r\nStatus: " status "\r\n\r\n" status "\r\n", stdout);
+/* I don't care how ugly this name is,
+** just write the damn page with the
+** provided mime type, status, and message. */
+#define WRITE_STATIC_PAGE(type, status, message) \
+	WRITE_LITERAL_STR("Content-Type: " type "\r\nStatus: " status "\r\n\r\n" message, stdout)
 
-/* magnet_print() becomes the underlying function for print(),
+/* For conveniently sending error headers
+** with the content being the status. */
+#define ERR_PAGE(status) \
+	WRITE_STATIC_PAGE("text/html", status, status "\r\n")
+
+/* magnet_print() becomes the underlying C function for print(),
 ** it is equivalent to io.stdout:write(...) except in that it
-** calls tostring() on each arg, possibly invoking a __tostring() */
+** calls tostring() on each arg, possibly invoking a __tostring metamethod */
 static int
 magnet_print(lua_State * const L)
 {
 	const size_t nargs = lua_gettop(L);
 	if (nargs)
 	{
-		const char * s;
+		const char *s;
 		size_t i, s_len;
 
 		lua_getglobal(L, "tostring");
@@ -49,6 +56,7 @@ magnet_print(lua_State * const L)
 			if (s == NULL)
 				return luaL_error(L, LUA_QL("tostring") " must return a string to " LUA_QL("print"));
 
+			/* sizeof(char) == 1 */
 			fwrite((char *) s, 1, s_len, stdout);
 
 			/* Pop <tostring(argument)> */
@@ -64,7 +72,7 @@ static int
 magnet_cache_script(lua_State * const L, const char * const filepath, const time_t mtime)
 {
 	/* Return value from luaL_loadfile() */
-	int status = luaL_loadfile(L, filepath);
+	const int status = luaL_loadfile(L, filepath);
 
 	/* Compile it as a chunk, push it as a function onto the Lua stack. */
 	if (status)
@@ -74,13 +82,23 @@ magnet_cache_script(lua_State * const L, const char * const filepath, const time
 			/* We assume that the only reason loadfile() could
 			** fail with this error is it being unreadable to us.
 			** We know it exists from the successful stat() */
-			case LUA_ERRFILE:   SEND_ERR("403 Forbidden"          ); break;
-			case LUA_ERRMEM:    SEND_ERR("503 Service Unavailable"); break;
+			case LUA_ERRFILE:   ERR_PAGE("403 Forbidden");           break;
+			case LUA_ERRMEM:    ERR_PAGE("503 Service Unavailable"); break;
 			case LUA_ERRSYNTAX:
-				printf("Content-Type: text/html\r\n"
-				       "Status: 200 OK\r\n"
-				       "\r\n"
-				       "%s\r\n", lua_tostring(L, -1));
+				/* Macros are substitution, we don't
+				** need to provide the third arg. --except that's a C99 thing T.T */
+				WRITE_STATIC_PAGE("text/html", "200 OK", "");
+				fputs(lua_tostring(L, -1), stdout);
+				/* Kept for peer review?  Thought it was an interesting comparison to debate.
+				printf
+				(
+					"Content-Type: text/html\r\n"
+					"Status: 200 OK\r\n"
+					"\r\n"
+					"%s\r\n",
+					lua_tostring(L, -1)
+				);
+				*/
 				break;
 		}
 		/* Pop error message. */
@@ -115,7 +133,7 @@ magnet_get_script(lua_State * const L, const char * const filepath)
 
 	if (filepath == NULL)
 	{
-		SEND_ERR("400 Bad Request");
+		ERR_PAGE("400 Bad Request");
 		return EXIT_FAILURE;
 	}
 
@@ -123,9 +141,9 @@ magnet_get_script(lua_State * const L, const char * const filepath)
 	{
 		switch (errno)
 		{
-			case EACCES: SEND_ERR("403 Forbidden");           break;
-			case ENOENT: SEND_ERR("404 Not Found");           break;
-			default:     SEND_ERR("503 Service Unavailable"); break;
+			case EACCES: ERR_PAGE("403 Forbidden");           break;
+			case ENOENT: ERR_PAGE("404 Not Found");           break;
+			default:     ERR_PAGE("503 Service Unavailable"); break;
 		}
 		return EXIT_FAILURE;
 	}
@@ -135,7 +153,7 @@ magnet_get_script(lua_State * const L, const char * const filepath)
 	** should be possible with anything *but* a directory */
 	if (S_ISDIR(script.st_mode))
 	{
-		SEND_ERR("400 Bad Request");
+		ERR_PAGE("400 Bad Request");
 		return EXIT_FAILURE;
 	}
 
@@ -181,38 +199,6 @@ magnet_get_script(lua_State * const L, const char * const filepath)
 	return EXIT_SUCCESS;
 }
 
-static int
-magnet_increment_counters(lua_State * const L, const char * const script)
-{
-	lua_Integer tmp;
-
-	/* First just get the script tables. -.- */
-	lua_getglobal      (L, "magnet"         );  /* Push magnet from _G                                  */
-	assert(lua_istable (L,       -1         )); /* assert() magnet is a table                           */
-	lua_getfield       (L,       -1, "cache");  /* Push magnet.cache                                    */
-	assert(lua_istable (L,       -1         )); /* assert() magnet.cache is a table                     */
-	lua_getfield       (L,       -1,  script);  /* Push magnet.cache['<script>']                        */
-	assert(lua_istable (L,       -1         )); /* assert() magnet.cache['<script>'] is a table         */
-
-	/* Increment the script's hit counter. */
-	lua_getfield       (L,       -1,  "hits");  /* Push magnet.cache['<script>'].hits                   */
-	tmp = lua_tointeger(L,       -1         );  /* hits = tointeger(^.hits)                             */
-	lua_pop            (L,        1         );  /* Pop  magnet.cache['<script>'].hits                   */
-	lua_pushinteger    (L,  tmp + 1         );  /* Push (hits + 1)                                      */
-	lua_setfield       (L,       -2,  "hits");  /* magnet.cache['<script>'].hits = (hits + 1), pops ^   */
-	lua_pop            (L,        2         );  /* Pop script's table, magnet.cache, leave magnet       */
-
-	/* Increment our served connections counter. */
-	lua_getfield       (L,      -1, "conns_served"); /* Push magnet.conns_served                        */
-	tmp = lua_tointeger(L,      -1                ); /* conns_served = tointeger(magnet.conns_served)   */
-	lua_pop            (L,       1                ); /* Pop magnet.conns_served                         */
-	lua_pushinteger    (L, tmp + 1                ); /* Push conns_served + 1                           */
-	lua_setfield       (L,      -2, "conns_served"); /* magnet.conns_served = (conns_served + 1), pop ^ */
-	lua_pop            (L,       1                ); /* Pop magnet                                      */
-
-	return EXIT_SUCCESS;
-}
-
 int
 main(void)
 {
@@ -235,6 +221,9 @@ main(void)
 
 	while (FCGI_Accept() >= 0)
 	{
+		/* For the script's hits counter and the
+		** global, requests served counter. */
+		lua_Integer tmp;
 		const char * const script = getenv("SCRIPT_FILENAME");
 
 		/* debug.traceback() */
@@ -258,7 +247,7 @@ main(void)
 		assert(lua_gettop(L) == 2);
 
 		/* Any errors generated by pcall() are printed
-		** in-place, don't count on headers having been sent.
+		** in-place, don't rely on headers having been sent.
 		** --------------------------------------------
 		** 1 item is always returned, 1 (last arg) is debug.traceback() */
 		if (lua_pcall(L, 0, 1, 1))
@@ -267,10 +256,32 @@ main(void)
 		/* Pop pcall() retval */
 		lua_pop(L, 1);
 
-		/* Increment the script's .hits counter,
-		** and our magnet.conns_served */
-		magnet_increment_counters(L, script);
+		/* First just get the script tables. -.- */
+		lua_getglobal      (L, "magnet"         );  /* Push magnet from _G                                  */
+		assert(lua_istable (L,       -1         )); /* assert() magnet is a table                           */
+		lua_getfield       (L,       -1, "cache");  /* Push magnet.cache                                    */
+		assert(lua_istable (L,       -1         )); /* assert() magnet.cache is a table                     */
+		lua_getfield       (L,       -1,  script);  /* Push magnet.cache['<script>']                        */
+		assert(lua_istable (L,       -1         )); /* assert() magnet.cache['<script>'] is a table         */
+
+		/* Increment the script's hit counter. */
+		lua_getfield       (L,       -1,  "hits");  /* Push magnet.cache['<script>'].hits                   */
+		tmp = lua_tointeger(L,       -1         );  /* hits = tointeger(^.hits)                             */
+		lua_pop            (L,        1         );  /* Pop  magnet.cache['<script>'].hits                   */
+		lua_pushinteger    (L,  tmp + 1         );  /* Push (hits + 1)                                      */
+		lua_setfield       (L,       -2,  "hits");  /* magnet.cache['<script>'].hits = (hits + 1), pops ^   */
+		lua_pop            (L,        2         );  /* Pop script's table, magnet.cache, leave magnet       */
+
+		/* Increment our served connections counter. */
+		lua_getfield       (L,      -1, "conns_served"); /* Push magnet.conns_served                        */
+		tmp = lua_tointeger(L,      -1                ); /* conns_served = tointeger(magnet.conns_served)   */
+		lua_pop            (L,       1                ); /* Pop magnet.conns_served                         */
+		lua_pushinteger    (L, tmp + 1                ); /* Push conns_served + 1                           */
+		lua_setfield       (L,      -2, "conns_served"); /* magnet.conns_served = (conns_served + 1), pop ^ */
+		lua_pop            (L,       1                ); /* Pop magnet                                      */
 	}
+
 	lua_close(L);
+
 	return EXIT_SUCCESS;
 }
