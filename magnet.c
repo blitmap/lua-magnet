@@ -62,6 +62,8 @@ magnet_print(lua_State * const L)
 			/* Pop <tostring(argument)> */
 			lua_pop(L, 1);
 		}
+		/* Pop original tostring() */
+		lua_pop(L, 1);
 	}
 	/* Nothing returned on the Lua stack,
 	** so return 0; (exposed cfunction) */
