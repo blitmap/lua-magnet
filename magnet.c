@@ -16,9 +16,18 @@
 #define ARRAY_LEN(array) (sizeof(array) / sizeof((array)[0]))
 
 /* A more efficient puts("read-only literal str")
-** Because I have fun micro-optimizing without reason */
+** Because I have fun micro-optimizing without reason
+** Example:
+** WRITE_LITERAL_STR("Hello thar", stdout)
+** `--> fwrite("Hello thar", 1, 11, stdout) */
 #define WRITE_LITERAL_STR(string, stream) \
 	fwrite((string), sizeof((string)[0]), ARRAY_LEN(string), (stream))
+
+/* Defined for possible future use, not sure yet.
+** WRITE_FIXED_STR("whatever", stdout, 9)
+** `--> fwrite("whatever", 1, 9, stdout) */
+#define WRITE_FIXED_STR(string, stream, size) \
+	fwrite((string), sizeof((string)[0]), (size), (stream))
 
 /* I don't care how ugly this name is,
 ** just write the damn page with the
@@ -56,17 +65,50 @@ magnet_print(lua_State * const L)
 			if (s == NULL)
 				return luaL_error(L, LUA_QL("tostring") " must return a string to " LUA_QL("print"));
 
-			/* sizeof(char) == 1 */
-			fwrite((char *) s, 1, s_len, stdout);
-
-			/* Pop <tostring(argument)> */
-			lua_pop(L, 1);
+			fwrite((char *) s, 1, s_len, stdout); /* sizeof(char) is always 1 (standard) */
+			lua_pop(L, 1); /* Pop result from tostring(argument) */
 		}
+		lua_pop(L, 1);     /* Pop original tostring() */
 	}
-	/* Nothing returned on the Lua stack,
+	/* Returning nothing on the Lua stack
 	** so return 0; (exposed cfunction) */
 	return 0;
 }
+
+/*
+** Brainstorming.. this was the original.
+** Was comparing the hit of lua_remove() vs lua_pop().
+** ...as seen above ^
+static int
+magnet_print(lua_State * const L)
+{
+	size_t nargs = lua_gettop(L);
+	if (nargs)
+	{
+		const char *s;
+		size_t i, s_len;
+
+		lua_getglobal(L, "tostring");
+		assert(lua_isfunction(L, -1));
+
+		for (; nargs > 0; nargs--)
+		{
+			lua_pushvalue(L, -1);
+			lua_pushvalue(L, 1);
+			lua_call(L, 1, 1);
+			s = lua_tolstring(L, -1, &s_len);
+
+			if (s == NULL)
+				return luaL_error(L, LUA_QL("tostring") " must return a string to " LUA_QL("print"));
+
+			fwrite((char *) s, 1, s_len, stdout);
+			lua_remove(L, 1);
+		}
+	}
+	
+	return 0;
+}
+*/
 
 static int
 magnet_cache_script(lua_State * const L, const char * const filepath, const time_t mtime)
