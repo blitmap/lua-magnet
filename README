@@ -46,6 +46,11 @@ Features (so far)
 	- Reports how many connections served through magnet.conns_served
 		(conns_served = sum of all scripts' magnet.cache['<script>'].hits) 
 
+	- magnet.dirlist() function for returning the items in a specificed directory
+		Enable with -DDIRLIST on compilation.
+		Items are pre-sorted alphabetically. (scandir() + alphasort())
+		Tables are of the form: { [1] = '.', [2] = '..', ... }
+
 Tip
 ---
 
@@ -102,7 +107,6 @@ Roadmap
 				- I believe ; or & is the (conventional?) record separator... need more info.
 
 	Low Priority: (luaFilesystem works spendidly for now)
-		- Add a function for listing a directory which returns each item (return file1, file2, file3 -- varargs-like)
 		- Add a function for stat()'ing a file.  Return attributes like ^ ?
 
 License
