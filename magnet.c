@@ -6,6 +6,17 @@
 **     + enable the directory listing function with -DDIRLIST
 */
 
+#include <assert.h>      /* assert() -- *duh*                  */
+#include <stdio.h>       /* fwrite(), fprintf(), fputs(), ...  */
+#include <stdlib.h>      /* EXIT_SUCCESS, EXIT_FAILURE         */
+#include <sys/stat.h>    /* stat()                             */
+#include <fcgi_stdio.h>  /* FCGI_Accept()                      */
+#include <errno.h>       /* int errno (used with stat() later) */
+#include <lualib.h>      /* LUA'Y STUFF :D -S-<                */
+#include <lauxlib.h>
+
+/* {{{1 Header conditional for DIRLIST */
+
 #if DIRLIST
 #	define _SVID_SOURCE
 #	include <dirent.h>  /* scandir(), alphasort(), ... */
@@ -13,14 +24,10 @@
 	typedef struct dirent dirent_t;
 #endif
 
-#include <sys/stat.h>    /* stat()                             */
-#include <assert.h>      /* assert() -- *duh*                  */
-#include <stdio.h>       /* fwrite(), fprintf(), fputs(), ...  */
-#include <stdlib.h>      /* EXIT_SUCCESS, EXIT_FAILURE         */
-#include <fcgi_stdio.h>  /* FCGI_Accept()                      */
-#include <errno.h>       /* int errno (used with stat() later) */
-#include <lualib.h>      /* LUA'Y STUFF :D -S-<                 */
-#include <lauxlib.h>
+/* }}} */
+
+
+/* {{{1 Macros */
 
 /* For getting the length of an array (NOT POINTERS) */
 #define ARRAY_LEN(array) (sizeof(array) / sizeof((array)[0]))
@@ -50,7 +57,10 @@
 #define LITERAL_ERR_PAGE(status) \
 	WRITE_CONST_PAGE("text/html", status, status "\r\n")
 
-/* Self-explanatory. */
+/* }}} */
+
+/* {{{1 Definitions */
+
 #if TRUE
 #else
 #	define TRUE (0 == 0)
@@ -61,11 +71,17 @@
 #	define FALSE (!TRUE)
 #endif
 
+/* }}} */
+
+/* {{{1 Explosed C functions */
+
+/* {{{2 static int magnet_print(lua_State * const L) */
+
 /* magnet_print() becomes the underlying C function for print(),
 ** it is equivalent to io.stdout:write(...) except in that it
 ** calls tostring() on each arg, possibly invoking a __tostring metamethod */
 static int
-magnet_print(lua_State * const L)
+magnet_print(register lua_State * const L)
 {
 	const size_t nargs = lua_gettop(L);
 	if (nargs)
@@ -95,11 +111,15 @@ magnet_print(lua_State * const L)
 	return 0;
 }
 
+/* }}} */
+
+/* {{{2 static int magnet_dirlist(lua_State * const L) */
+
 #if DIRLIST
 /* Returns a table of the directory contents,
 ** requires 1 string passed for the directory name */
 static int
-magnet_dirlist(lua_State * const L)
+magnet_dirlist(register lua_State * const L)
 {
 	if (lua_gettop(L) != 1)
 	{
@@ -151,8 +171,14 @@ magnet_dirlist(lua_State * const L)
 }
 #endif
 
+/* }}} */
+
+/* }}} */
+
+/* {{{1 static int magnet_cache_script(lua_State * const L, const char * const filepath, const time_t mtime) */
+
 static int
-magnet_cache_script(lua_State * const L, const char * const filepath, const time_t mtime)
+magnet_cache_script(register lua_State * const L, const char * const filepath, const time_t mtime)
 {
 	/* Return value from luaL_loadfile() */
 	const int status = luaL_loadfile(L, filepath);
@@ -168,11 +194,6 @@ magnet_cache_script(lua_State * const L, const char * const filepath, const time
 			case LUA_ERRFILE:   LITERAL_ERR_PAGE("403 Forbidden");           break;
 			case LUA_ERRMEM:    LITERAL_ERR_PAGE("503 Service Unavailable"); break;
 			case LUA_ERRSYNTAX:
-				/* Macros are substitution, we don't
-				** need to provide the third arg. --except that's a C99 thing T.T */
-				WRITE_CONST_PAGE("text/html", "200 OK", "");
-				fputs(lua_tostring(L, -1), stdout);
-				/* Kept for peer review?  Thought it was an interesting comparison to debate.
 				printf
 				(
 					"Content-Type: text/html\r\n"
@@ -181,7 +202,6 @@ magnet_cache_script(lua_State * const L, const char * const filepath, const time
 					"%s\r\n",
 					lua_tostring(L, -1)
 				);
-				*/
 				break;
 		}
 		/* Pop error message. */
@@ -209,8 +229,12 @@ magnet_cache_script(lua_State * const L, const char * const filepath, const time
 	return EXIT_SUCCESS;
 }
 
+/* }}} */
+
+/* {{{1 static int magnet_get_script(lua_State * const L, const char * const filepath) */
+
 static int
-magnet_get_script(lua_State * const L, const char * const filepath)
+magnet_get_script(register lua_State * const L, const char * const filepath)
 {
 	struct stat script;
 
@@ -282,10 +306,14 @@ magnet_get_script(lua_State * const L, const char * const filepath)
 	return EXIT_SUCCESS;
 }
 
+/* }}} */
+
+/* {{{1 int main(void) */
+
 int
 main(void)
 {
-	lua_State * const L = luaL_newstate();
+	register lua_State * const L = luaL_newstate();
 
 	/* require() in our
 	** Lua libraries */
@@ -352,7 +380,7 @@ main(void)
 
 /* Gets the field (lua_Number) of the table on the top
 ** of the lua stack, increments it and re-sets it. */
-#define _F_MAIN_INCREMENT_ACCUMULATOR(lua_state, accumulator, lua_num) \
+#define _F_MAIN_INCREMENT_LUA_ACCUMULATOR(lua_state, accumulator, lua_num) \
 		do                                                                                                                              \
 		{                                                                                                                               \
 			lua_getfield          (lua_state,          -1, accumulator); /* Push "accumulator" field from table on top of lua state. */ \
@@ -363,16 +391,17 @@ main(void)
 		} while (0)
 
 		/* Stack: table(magnet), table(magnet.cache), table(<script>) */
-		_F_MAIN_INCREMENT_ACCUMULATOR(L,         "hits", tmp);
-		lua_pop(L, 2); /* Pop table(script), table(magnet.cache) */
-		_F_MAIN_INCREMENT_ACCUMULATOR(L, "conns_served", tmp);
-		lua_pop(L, 1); /* Pop table(magnet)                      */
+		_F_MAIN_INCREMENT_LUA_ACCUMULATOR(L,         "hits", tmp);
+		lua_pop(L, 2); /* Pop table(script), table(magnet.cache)      */
+		_F_MAIN_INCREMENT_LUA_ACCUMULATOR(L, "conns_served", tmp);
+		lua_pop(L, 1); /* Pop table(magnet)                           */
 
-#undef _F_MAIN_INCREMENT_ACCUMULATOR
+#undef _F_MAIN_INCREMENT_LUA_ACCUMULATOR
+
 	}
 
 	lua_close(L);
-
 	return EXIT_SUCCESS;
 }
 
+/* }}} */
