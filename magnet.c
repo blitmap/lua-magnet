@@ -1,7 +1,10 @@
-/* Compile: gcc   -o magnet{,.c} -W -Wall -O2 -flto -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
-**        : clang -o magnet{,.c} -W -Wall -O2 -flto -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
-** ---------------------------------------------------------------------------------------------
-** I find clang to be so much more descriptive for errors and warnings. <3 */
+/* Compile:
+**     + gcc   -o magnet{,.c} -W -Wall -O2 -flto -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+**     + clang -o magnet{,.c} -W -Wall -O2       -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+**   Notes:
+**     + clang does not accept -flto for link-time optimization
+**     + enable the directory listing function with -DDIRLIST
+*/
 
 #if DIRLIST
 #	define _SVID_SOURCE
