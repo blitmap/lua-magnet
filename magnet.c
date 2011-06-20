@@ -1,12 +1,14 @@
 /* Compile:
-**     + gcc   -o magnet{,.c} -W -Wall -O2 -flto -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c99
-**     + clang -o magnet{,.c} -W -Wall -O2       -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c99
+**     + gcc   -o magnet{,.c} -W -Wall -O2 -flto -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+**     + clang -o magnet{,.c} -W -Wall -O2       -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
 **   Notes:
 **     + clang does not accept -flto for link-time optimization
 **     + Enable the directory listing function with -DDIRLIST
 */
 
-/* {{{1 Header conditional for DIRLIST */
+/* {{{1 Header Includes */
+
+/* {{{2 Header conditional for DIRLIST */
 
 #if DIRLIST
 #	define _SVID_SOURCE
@@ -25,6 +27,8 @@
 #include <errno.h>       /* int errno (used with stat() later) */
 #include <lualib.h>      /* LUA'Y STUFF :D -S-<                */
 #include <lauxlib.h>
+
+/* }}} */
 
 /* {{{1 Macros */
 
@@ -69,42 +73,46 @@
 
 /* }}} */
 
+/* {{{1 Global Variables */
+
+static int tostring_ref = LUA_REFNIL;
+
+/* }}} */
+
 /* {{{1 Explosed C functions */
 
 /* {{{2 static int magnet_print(lua_State * const L) */
 
 /* magnet_print() becomes the underlying C function for print(),
-** it is equivalent to io.stdout:write(...) except in that it
+** it is equivalent to io.stdout:write(...) except that it
 ** calls tostring() on each arg, possibly invoking a __tostring metamethod */
 static int
 magnet_print(register lua_State * const L)
 {
 	const size_t nargs = lua_gettop(L);
+
 	if (0 != nargs)
 	{
 		size_t i;
-		lua_getglobal(L, "tostring");
-		assert(lua_isfunction(L, -1));
+		size_t s_len;
+		const char *s;
 
 		for (i = 1; i <= nargs; i++)
 		{
-			const char *s;
-			size_t s_len;
-
-			lua_pushvalue    (L, -1        ); /* Push tostring()                      */
-			lua_pushvalue    (L,  i        ); /* Push argument                        */
-			lua_call         (L,  1,      1); /* tostring(argument), take 1, return 1 */
-			s = lua_tolstring(L, -1, &s_len); /* Fetch result.                        */
+			lua_rawgeti      (L, LUA_REGISTRYINDEX, tostring_ref); /* Push tostring()                      */
+			lua_pushvalue    (L,                 i              ); /* Push argument                        */
+			lua_call         (L,                 1,            1); /* tostring(argument), take 1, return 1 */
+			s = lua_tolstring(L,                -1,       &s_len); /* Fetch result.                        */
 			
 			if (NULL == s)
 				return luaL_error(L, LUA_QL("tostring") " must return a string to " LUA_QL("print"));
 
-			fwrite((char *) s, 1, s_len, stdout); /* sizeof(char) is always 1 (standard) */
-			lua_pop(L, 1); /* Pop result from tostring(argument) */
+			FCGI_fwrite((char *) s, 1, s_len, FCGI_stdout); /* sizeof(char) is always 1 (standard) */
+			lua_pop(L, 1);                                  /* Pop result from tostring(argument)  */
 		}
-		/* lua_pop(L, 1); Pop original tostring() -- not needed */
 	}
-	/* Return nothing on stack. */
+
+	/* Return nothing on the *Lua* stack. */
 	return 0;
 }
 
@@ -316,9 +324,14 @@ main(void)
 {
 	register lua_State * const L = luaL_newstate();
 
-	/* require() in our
-	** Lua libraries */
 	luaL_openlibs(L);
+
+	/* This is for magnet_print(), we're
+	** initialising the file-scoped tostring() ref */
+	lua_getglobal(L, "tostring");
+	assert(lua_isfunction(L, -1));
+	tostring_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	assert(LUA_REFNIL != tostring_ref);
 
 	lua_newtable     (L                                ); /* Push a new table.                           */
 	lua_newtable     (L                                ); /* Push a new table.                           */
@@ -342,7 +355,8 @@ main(void)
 		const char * const script = getenv("SCRIPT_FILENAME");
 
 		/* debug.traceback() */
-		assert(lua_gettop(L) == 1 && lua_isfunction(L, 1));
+		assert(1 == lua_gettop(L));
+		assert(lua_isfunction(L, 1));
 
 		/* Couldn't get script-function,
 		** response has been sent, skip the rest. */
@@ -366,7 +380,7 @@ main(void)
 		** --------------------------------------------
 		** 1 item is always returned, 1 (last arg) is debug.traceback() */
 		if (lua_pcall(L, 0, 1, 1))
-			fputs(lua_tostring(L, -1), stdout);
+			fputs(lua_tostring(L, -1), FCGI_stdout);
 
 		/* Pop pcall() retval */
 		lua_pop(L, 1);
