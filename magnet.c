@@ -1,6 +1,6 @@
 /* Compile:
-**     + gcc   -o magnet{,.c} -W -Wall -O2 -flto -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
-**     + clang -o magnet{,.c} -W -Wall -O2       -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
+**     + gcc   -o magnet{,.c} -W -Wall -O2 -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89 -flto -fstack-protector-all
+**     + clang -o magnet{,.c} -W -Wall -O2 -g -lfcgi -llua -lm -ldl -pedantic -ansi -std=c89
 **   Notes:
 **     + clang does not accept -flto for link-time optimization
 **     + Enable the directory listing function with -DDIRLIST
@@ -8,74 +8,147 @@
 
 /* {{{1 Header Includes */
 
+
 /* {{{2 Header conditional for DIRLIST */
 
 #if DIRLIST
-#	define _SVID_SOURCE
+#	if _BSD_SOURCE
+#	else
+#		define _BSD_SOURCE
+#	endif
 #	include <string.h>  /* strerror() */
 #	include <dirent.h>  /* scandir(), alphasort(), ... */
-	typedef struct dirent dirent_t;
+typedef struct dirent dirent_t;
 #endif
 
 /* }}} */
 
+#if _BSD_SOURCE
+#else
+#	define _BSD_SOURCE
+#endif
+
 #include <assert.h>      /* assert() -- *duh*                  */
 #include <stdio.h>       /* fwrite(), fprintf(), fputs(), ...  */
 #include <stdlib.h>      /* EXIT_SUCCESS, EXIT_FAILURE         */
+#include <string.h>      /* strdup(), strtok()                 */
 #include <sys/stat.h>    /* stat()                             */
 #include <fcgi_stdio.h>  /* FCGI_Accept()                      */
 #include <errno.h>       /* int errno (used with stat() later) */
 #include <lualib.h>      /* LUA'Y STUFF :D -S-<                */
 #include <lauxlib.h>
 
+
 /* }}} */
 
 /* {{{1 Macros */
 
-/* For getting the length of an array (NOT POINTERS) */
-#define ARRAY_LEN(array) (sizeof(array) / sizeof((array)[0]))
+/* For getting the length of an array (obvious) */
+#define LEN(array) (sizeof(array) / sizeof((array)[0]))
 
-/* A more efficient puts("read-only literal str")
-** Because I have fun micro-optimizing without reason
-** Example:
-** WRITE_LITERAL_STR("Hello thar", stdout)
-** `--> fwrite("Hello thar", 1, 11, stdout) */
-#define WRITE_LITERAL_STR(string, stream) \
-	fwrite((string), sizeof((string)[0]), ARRAY_LEN(string), (stream))
+/* Literal array write */
+#define LA_WRITE(array, fd) \
+	fwrite(array, sizeof((array)[0]), LEN(array), fd)
 
-/* I don't care how ugly this name is,
-** just write the damn page with the
-** provided mime type, status, and message.
-** (boils down to one fwrite()) */
-#define WRITE_CONST_PAGE(type, status, message) \
-	WRITE_LITERAL_STR("Content-Type: " type "\r\nStatus: " status "\r\n\r\n" message, stdout)
+/* LA_FCGIOUT("Hello thar")
+** `--> LA_WRITE("Hello thar", FCGI_stdout)
+**     `--> fwrite("Hello thar", 1, 11, FCGI_stdout) */
+#define LA_FCGIOUT(array) LA_WRITE(array, FCGI_stdout)
 
-/* For efficiently sending error headers
-** with the content being the status.
-** (boils down to one fwrite())
-** LITERAL_ERR_PAGE("404 Not Found")
-** `--> Content-Type: text/html\r\n
-**      Status: 404 Not Found\r\n
-**      \r\n
-**      404 Not Found
-**
-** Some browsers see text/plain
-** in the content-type header and
-** use their own error pages instead.
-** -DPLAINTEXT_ERROR_PAGES if you want
-** this, defaults to text/html to override that.
-*/
-#if PLAINTEXT_ERROR_PAGES
-#	define LITERAL_ERR_PAGE(status) WRITE_CONST_PAGE("text/plain", status, status "\r\n")
+/* LA_FCGIERR("Hello thar")
+** `--> LA_WRITE("Hello thar", FCGI_stderr)
+**     `--> fwrite("Hello thar", 1, 11, FCGI_stderr) */
+#define LA_FCGIERR(array) LA_WRITE(array, FCGI_stderr)
+
+/* Write a literal page with the provided mime type,
+** status and message (reduces to one fwrite()) */
+#define LA_PAGEOUT(type, status, message) \
+	LA_FCGIOUT                                          \
+	(                                                   \
+		"Content-Type: "   type                  "\r\n" \
+		"Status: "         status                "\r\n" \
+		                                         "\r\n" \
+		message                                         \
+	)
+
+/* Some browsers like to use their own error pages,
+** this seems to only be if Content-Type == text/plain.
+** You can define ERRPAGE_TYPE to whatever mime type you
+** want or it will obviously use text/plain */
+#if ERRPAGE_TYPE
 #else
-#	define LITERAL_ERR_PAGE(status) WRITE_CONST_PAGE("text/html", status, status "\r\n")
+#	define ERRPAGE_TYPE "text/plain"
 #endif
+
+/*
+** LA_PAGEERR("404 Not Found")
+** `--> LA_PAGEOUT(ERR_TYPE, "404 Not Found", "404 Not Found")
+**     `--> Content-Type: text/html\r\n
+**          Status: 404 Not Found\r\n
+**          Content-Length: 13\r\n
+**          \r\n
+**          404 Not Found
+*/
+#define LA_PAGEERR(status) \
+	LA_PAGEOUT(ERRPAGE_TYPE, status, status)
 
 /* }}} */
 
-/* {{{1 Global Variables */
+/* {{{1 File-scoped "Globals" */
 
-static int tostring_ref = LUA_REFNIL;
+static int        tostring_ref = LUA_NOREF,
+           debug_traceback_ref = LUA_NOREF;
+
+/* }}} */
+
+/* {{{1 Helper C-Side Functions */
+
+/*
+** static int ref = LUA_REFNIL;
+** if (LUA_REFNIL != make_ref_in_registry(L, &ref, "string.gmatch"))
+**     puts("string.gmatch() is now referenced in the Lua C registry...");
+** Later: lua_rawgeti(L, LUA_REGISTRYINDEX, ref); Pushed the referenced item...
+*/ 
+static int
+make_ref_in_registry(lua_State * const L, int * const ref, const char * const findme)
+{
+    int n;
+	char *token, *str;
+    const char seps[] = ".[]\"\'";
+
+    *ref = LUA_NOREF;
+
+    if (findme == NULL || '\0' == *findme)
+        return (*ref);
+
+    str = strdup(findme);
+    lua_pushvalue(L, LUA_GLOBALSINDEX);
+    n = 1;
+
+    for (token = strtok(str, seps); NULL != token; token = strtok(NULL, seps))
+    {
+		/* In case the strtok() implementation is non-standard and
+		** it returns empty ("") strings between 2 separators. */
+		if ('\0' == *token)
+			continue;
+
+        if (!lua_istable(L, -1))
+            goto exit;
+
+        lua_getfield(L, -1, token);
+        n++;
+    }
+
+	/* luaL_ref() pops the last-pushed item */
+    *ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	n--;
+
+exit:
+
+    free(str);
+    lua_pop(L, n);
+    return (*ref);
+}
 
 /* }}} */
 
@@ -93,26 +166,25 @@ magnet_print(register lua_State * const L)
 
 	if (0 != nargs)
 	{
-		size_t i;
-		size_t s_len;
 		const char *s;
+		size_t i, s_sz;
 
 		for (i = 1; i <= nargs; i++)
 		{
 			lua_rawgeti      (L, LUA_REGISTRYINDEX, tostring_ref); /* Push tostring()                      */
 			lua_pushvalue    (L,                 i              ); /* Push argument                        */
 			lua_call         (L,                 1,            1); /* tostring(argument), take 1, return 1 */
-			s = lua_tolstring(L,                -1,       &s_len); /* Fetch result.                        */
+			s = lua_tolstring(L,                -1,       &s_sz); /* Fetch result.                        */
 			
 			if (NULL == s)
 				return luaL_error(L, LUA_QL("tostring") " must return a string to " LUA_QL("print"));
 
-			FCGI_fwrite((char *) s, 1, s_len, FCGI_stdout); /* sizeof(char) is always 1 (standard) */
-			lua_pop(L, 1);                                  /* Pop result from tostring(argument)  */
+			FCGI_fwrite((char *) s, 1, s_sz, FCGI_stdout); /* sizeof(char) is always 1 (standard) */
+			lua_pop(L, 1);                                 /* Pop result from tostring(argument)  */
 		}
 	}
 
-	/* Return nothing on the *Lua* stack. */
+	/* Return nothing on the -Lua- stack. */
 	return 0;
 }
 
@@ -121,8 +193,11 @@ magnet_print(register lua_State * const L)
 /* {{{2 static int magnet_dirlist(lua_State * const L) */
 
 #if DIRLIST
-/* Returns a table of the directory contents,
-** requires 1 string passed for the directory name */
+
+/* Eventually I need to put a stat()-like function in here.... */
+
+/* Example: dirlist('/home') Returns: a table of contents as strings
+** I tried to follow the nil, 'error' convention on failure... */
 static int
 magnet_dirlist(register lua_State * const L)
 {
@@ -130,17 +205,18 @@ magnet_dirlist(register lua_State * const L)
 	{
 		/* return nil, '"dirlist" must receive a string' */
 		lua_pushnil(L);
-		lua_pushstring (L, LUA_QL("dirlist") " must receive a string");
+		lua_pushstring(L, LUA_QL("dirlist") " must receive a string");
 		return 2;
 	}
 	else
 	{
+		size_t s_sz;
 		const char * const s = luaL_checkstring(L, 1);
 		if (s == NULL)
 		{
 			/* return nil, '"tostring" must return a string to "dirlist"' */
 			lua_pushnil(L);
-			lua_pushstring (L, LUA_QL("tostring") " must return a string to " LUA_QL("dirlist"));
+			lua_pushstring(L, LUA_QL("tostring") " must return a string to " LUA_QL("dirlist"));
 			return 2;
 		}
 		else
@@ -151,7 +227,7 @@ magnet_dirlist(register lua_State * const L)
 			if (n < 0)
 			{
 				lua_pushnil(L);
-				lua_pushstring (L, strerror(errno));
+				lua_pushstring(L, strerror(errno));
 				return 2;
 			}
 			else
@@ -162,12 +238,11 @@ magnet_dirlist(register lua_State * const L)
 				/* Creating the array backwards but this is okay since ipairs()
 				** only uses the numerical key index to iterate forwards and
 				** pairs() is order-unspecified */
-				while (n--)
+				for (; n != 0; n--)
 				{
 					lua_pushnumber(L, ((lua_Number) n) + 1); /* Push key, + 1 because Lua arrays start at 1 */
 					lua_pushstring(L,  namelist[n]->d_name); /* Push name of item.                          */
 					lua_settable  (L,                   -3); /* t.key = value; pop string and number        */
-
 					free(namelist[n]);                       /* Free as we go.... :o)                       */
 				}
 				free(namelist);
@@ -178,6 +253,7 @@ magnet_dirlist(register lua_State * const L)
 		}
 	}
 }
+
 #endif
 
 /* }}} */
@@ -200,8 +276,8 @@ magnet_cache_script(register lua_State * const L, const char * const filepath, c
 			/* We assume that the only reason loadfile() could
 			** fail with this error is it being unreadable to us.
 			** We know it exists from the successful stat() */
-			case LUA_ERRFILE:   LITERAL_ERR_PAGE("403 Forbidden");           break;
-			case LUA_ERRMEM:    LITERAL_ERR_PAGE("503 Service Unavailable"); break;
+			case LUA_ERRFILE: LA_PAGEERR("403 Forbidden"          ); break;
+			case LUA_ERRMEM:  LA_PAGEERR("503 Service Unavailable"); break;
 			case LUA_ERRSYNTAX:
 				printf
 				(
@@ -213,13 +289,14 @@ magnet_cache_script(register lua_State * const L, const char * const filepath, c
 				);
 				break;
 		}
-		/* Pop error message. */
+		/* Pop luaL_loadfile()'s error message. */
 		lua_pop(L, 1);
 		return EXIT_FAILURE;
 	}
 
 	/* Make sure loadfile() pushed a function */
-	assert(lua_gettop(L) == 2 && lua_isfunction(L, -1));
+	assert(1 == lua_gettop(L));
+	assert(lua_isfunction(L, -1));
 
 	lua_getglobal  (L, "magnet"          ); /* Push magnet from _G                           */
 	lua_getfield   (L,       -1,  "cache"); /* Push magnet.cache from _G                     */
@@ -233,8 +310,11 @@ magnet_cache_script(register lua_State * const L, const char * const filepath, c
 	lua_setfield   (L,       -2, filepath); /* magnet.cache.~script~ = <table>, pops <table> */
 	lua_pop        (L,        2          ); /* Pops magnet and magnet.cache                  */
 
-	/* Only 2 things on the stack, debug.traceback() and loadfile() function */
-	assert(lua_gettop(L) == 2 && lua_isfunction(L, 2));
+	/* The result of loadfile() should be
+	** the only thing on the stack. */
+	assert(1 == lua_gettop(L));
+	assert(lua_isfunction(L, 1));
+
 	return EXIT_SUCCESS;
 }
 
@@ -249,7 +329,7 @@ magnet_get_script(register lua_State * const L, const char * const filepath)
 
 	if (filepath == NULL)
 	{
-		LITERAL_ERR_PAGE("400 Bad Request");
+		LA_PAGEERR("400 Bad Request");
 		return EXIT_FAILURE;
 	}
 
@@ -257,19 +337,19 @@ magnet_get_script(register lua_State * const L, const char * const filepath)
 	{
 		switch (errno)
 		{
-			case EACCES: LITERAL_ERR_PAGE("403 Forbidden");           break;
-			case ENOENT: LITERAL_ERR_PAGE("404 Not Found");           break;
-			default:     LITERAL_ERR_PAGE("503 Service Unavailable"); break;
+			case EACCES: LA_PAGEERR("403 Forbidden"            ); break;
+			case ENOENT: LA_PAGEERR("404 Not Found"            ); break;
+			default:     LA_PAGEERR("500 Internal Server Error"); break;
 		}
 		return EXIT_FAILURE;
 	}
 
-	/* Not sure why one would SCRIPT_FILENAME='somedirectory/'
+	/* Not sure why one would SCRIPT_FILENAME='somedirectory/' -- symlink?
 	** but let's cover our bases anyway. I believe loadfile()
-	** should be possible with anything *but* a directory */
+	** should be possible with anything *but* a directory...? */
 	if (S_ISDIR(script.st_mode))
 	{
-		LITERAL_ERR_PAGE("400 Bad Request");
+		LA_PAGEOUT(ERRPAGE_TYPE, "200 OK", "`SCRIPT_FILENAME' references a directory");
 		return EXIT_FAILURE;
 	}
 
@@ -302,7 +382,7 @@ magnet_get_script(register lua_State * const L, const char * const filepath)
 			lua_pop              (L,  3          );  /* Pop magnet, magnet.cache, and magnet.cache['<script>'] */
 		}
 		/* Script has been modified since
-		** we last stat() it, re-cache */
+		** we last stat()'d it, re-cache */
 		else
 		{
 			/* Pop <mtime>, magnet.cache['<script>'],
@@ -326,12 +406,11 @@ main(void)
 
 	luaL_openlibs(L);
 
-	/* This is for magnet_print(), we're
-	** initialising the file-scoped tostring() ref */
-	lua_getglobal(L, "tostring");
-	assert(lua_isfunction(L, -1));
-	tostring_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-	assert(LUA_REFNIL != tostring_ref);
+	/* Set our references for later. */
+	make_ref_in_registry(L, &tostring_ref,        "tostring"       );
+	assert(LUA_REFNIL != tostring_ref       );
+	make_ref_in_registry(L, &debug_traceback_ref, "debug.traceback");
+	assert(LUA_REFNIL != debug_traceback_ref);
 
 	lua_newtable     (L                                ); /* Push a new table.                           */
 	lua_newtable     (L                                ); /* Push a new table.                           */
@@ -343,10 +422,7 @@ main(void)
 	lua_setfield     (L,             -2,      "dirlist"); /* magnet.dirlist(), pops cfunction            */
 #endif
 	lua_setglobal    (L,       "magnet"                ); /* _G.magnet = <table#1>, pops <table#1>       */
-	lua_getglobal    (L,        "debug"                ); /* Push debug from _G                          */
-	lua_getfield     (L,             -1,    "traceback"); /* Push debug.traceback()                      */
-	lua_remove       (L,              1                ); /* Pop  debug                                  */
-	
+
 	while (FCGI_Accept() >= 0)
 	{
 		/* For the script's hits counter and the
@@ -354,9 +430,8 @@ main(void)
 		lua_Number tmp;
 		const char * const script = getenv("SCRIPT_FILENAME");
 
-		/* debug.traceback() */
-		assert(1 == lua_gettop(L));
-		assert(lua_isfunction(L, 1));
+		/* Should be nothing on the stack. */
+		assert(0 == lua_gettop(L));
 
 		/* Couldn't get script-function,
 		** response has been sent, skip the rest. */
@@ -372,18 +447,31 @@ main(void)
 		lua_setmetatable (L,               -2           ); /* setmetatable(<table#1>, <table#2>)                  */
 		lua_setfenv      (L,               -2           ); /* setfenv(<script-function>, <table#1>) (modded env)  */
 
-		/* debug.traceback() and script-function on stack */
-		assert(lua_gettop(L) == 2);
+		/* script-function on stack */
+		assert(1 == lua_gettop(L));
+
+		/* Push the traceback() reference from the registry */
+		lua_rawgeti(L, LUA_REGISTRYINDEX, debug_traceback_ref);
+		assert(lua_isfunction(L, -1));
+
+		/* Basically swap the traceback()
+		** ref and the script-function */
+		lua_insert(L, 1);
 
 		/* Any errors generated by pcall() are printed
-		** in-place, don't rely on headers having been sent.
-		** --------------------------------------------
-		** 1 item is always returned, 1 (last arg) is debug.traceback() */
-		if (lua_pcall(L, 0, 1, 1))
+		** in-place, don't rely on HTTP headers having been sent. */
+		if (lua_pcall(L, 0, 0, 1))
+		{
+			assert(lua_isstring(L, -1));
 			fputs(lua_tostring(L, -1), FCGI_stdout);
+			lua_pop(L, 1);
+		}
 
-		/* Pop pcall() retval */
+		/* pcall() pops the script-function
+		** this pops the traceback() ref */
 		lua_pop(L, 1);
+
+		assert(0 == lua_gettop(L));
 
 		/* First just get the script tables. -.- */
 		lua_getglobal      (L, "magnet"         );  /* Push magnet from _G                                  */
@@ -415,7 +503,7 @@ main(void)
 /* If you want to be strict about memory;
 ** hurts web servers with many requests since it's
 ** a full collection and not a step. */
-#if GC_COLLECT_AFTER_RUN
+#if GC_COLLECT_AFTER_CONNECT
 		lua_gc(L, LUA_GCCOLLECT, 0);
 #endif
 	}
