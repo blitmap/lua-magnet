@@ -128,7 +128,7 @@ Features (so far)
 		is plaintext... You can text text/html or something else to override
 		that behavior.
 
-	- -DGC_COLLECT_AFTER_RUN (use at compile-time)
+	- -DGC_COLLECT_AFTER_CONNECT (use at compile-time)
 		Forces a garbage collection after each script run (the very last thing done)
 
 		Note: This is probably a bad idea since it isn't a gc step and
