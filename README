@@ -122,8 +122,11 @@ Features (so far)
 			    content
 			)
 
-	- -DPLAINTEXT_ERROR_PAGES (use at compile-time)
-		Error pages are sent as text/plain instead of text/html for the Content-Type header.
+	- -DERRPAGE_TYPE=text/html (use at compile-time)
+		Error pages are sent as text/plain by default, browsers often
+		use their own error pages if the status is not 200 and the type
+		is plaintext... You can text text/html or something else to override
+		that behavior.
 
 	- -DGC_COLLECT_AFTER_RUN (use at compile-time)
 		Forces a garbage collection after each script run (the very last thing done)
