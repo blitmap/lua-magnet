@@ -67,7 +67,7 @@ typedef struct dirent dirent_t;
 	(                                                   \
 		"Content-Type: "   type                  "\r\n" \
 		"Status: "         status                "\r\n" \
-		                                         "\r\n" \
+												 "\r\n" \
 		message                                         \
 	)
 
@@ -105,12 +105,12 @@ static int        tostring_ref = LUA_NOREF,
 
 /*
 ** static int ref = LUA_REFNIL;
-** if (LUA_REFNIL != make_ref_in_registry(L, &ref, "string.gmatch"))
+** if (LUA_REFNIL != reference_in_registry(L, &ref, "string.gmatch"))
 **     puts("string.gmatch() is now referenced in the Lua C registry...");
 ** Later: lua_rawgeti(L, LUA_REGISTRYINDEX, ref); Pushed the referenced item...
-*/ 
+*/
 static int
-make_ref_in_registry(lua_State * const L, int * const ref, const char * const findme)
+reference_in_registry(lua_State * const L, int * const ref, const char * const findme)
 {
     int n;
 	char *token, *str;
@@ -122,6 +122,10 @@ make_ref_in_registry(lua_State * const L, int * const ref, const char * const fi
         return (*ref);
 
     str = strdup(findme);
+
+	if (NULL == str)
+		return (*ref);
+
     lua_pushvalue(L, LUA_GLOBALSINDEX);
     n = 1;
 
@@ -279,12 +283,13 @@ magnet_cache_script(register lua_State * const L, const char * const filepath, c
 			case LUA_ERRFILE: LA_PAGEERR("403 Forbidden"          ); break;
 			case LUA_ERRMEM:  LA_PAGEERR("503 Service Unavailable"); break;
 			case LUA_ERRSYNTAX:
-				printf
+				fprintf
 				(
-					"Content-Type: text/html\r\n"
-					"Status: 200 OK\r\n"
-					"\r\n"
-					"%s\r\n",
+					FCGI_stdout,
+					"Content-Type: text/plain" "\r\n"
+					"Status: 200 OK"           "\r\n"
+					                           "\r\n"
+					"%s"                       "\r\n",
 					lua_tostring(L, -1)
 				);
 				break;
@@ -407,9 +412,9 @@ main(void)
 	luaL_openlibs(L);
 
 	/* Set our references for later. */
-	make_ref_in_registry(L, &tostring_ref,        "tostring"       );
+	reference_in_registry(L, &tostring_ref,        "tostring"       );
 	assert(LUA_REFNIL != tostring_ref       );
-	make_ref_in_registry(L, &debug_traceback_ref, "debug.traceback");
+	reference_in_registry(L, &debug_traceback_ref, "debug.traceback");
 	assert(LUA_REFNIL != debug_traceback_ref);
 
 	lua_newtable     (L                                ); /* Push a new table.                           */
@@ -463,7 +468,15 @@ main(void)
 		if (lua_pcall(L, 0, 0, 1))
 		{
 			assert(lua_isstring(L, -1));
-			fputs(lua_tostring(L, -1), FCGI_stdout);
+			fprintf
+			(
+				FCGI_stdout,
+				"Content-Type: text/plain" "\r\n"
+				"Status: 200 OK"           "\r\n"
+				                           "\r\n"
+				"%s"                       "\r\n",
+				lua_tostring(L, -1)
+			);
 			lua_pop(L, 1);
 		}
 
