@@ -1,3 +1,12 @@
+# THIS == DEAD
+
+I pushed this to Github to preserve it.  This is a FastCGI Lua server ~thing~ I wrote and worked on a long time ago.
+
+I don't work on it anymore.
+
+This was one of the first things that got me into webdev.  From FastCGI I went to SCGI, and then WSGI, and then I started making the application the webserver (nodejs).  This is where I started.
+
+--------------------------------------------------------------------------------------------------
 
 	Compile:
 

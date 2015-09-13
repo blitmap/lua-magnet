@@ -23,10 +23,12 @@ typedef struct dirent dirent_t;
 
 /* }}} */
 
+/*
 #if _BSD_SOURCE
 #else
 #	define _BSD_SOURCE
 #endif
+*/
 
 #include <assert.h>      /* assert() -- *duh*                  */
 #include <stdio.h>       /* fwrite(), fprintf(), fputs(), ...  */
@@ -214,7 +216,6 @@ magnet_dirlist(register lua_State * const L)
 	}
 	else
 	{
-		size_t s_sz;
 		const char * const s = luaL_checkstring(L, 1);
 		if (s == NULL)
 		{
